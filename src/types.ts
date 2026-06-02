@@ -14,6 +14,7 @@ export interface DocumentLink {
   uploader: string;
   isPinned: boolean;
   clicks: number;
+  isHidden?: boolean;
 }
 
 export type CategoryType = 

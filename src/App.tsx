@@ -33,7 +33,9 @@ import {
   Lock,
   Unlock,
   Laptop,
-  KeyRound
+  KeyRound,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { DocumentLink, CategoryType } from './types';
 import { INITIAL_DOCUMENTS } from './data/defaultDocuments';
@@ -124,6 +126,7 @@ export default function App() {
   const [formFileType, setFormFileType] = useState<DocumentLink['fileType']>('pdf');
   const [formUploader, setFormUploader] = useState('');
   const [formIsPinned, setFormIsPinned] = useState(false);
+  const [formIsHidden, setFormIsHidden] = useState(false);
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
 
   // Sync to localStorage
@@ -190,6 +193,7 @@ export default function App() {
       dateAdded: new Date().toISOString().split('T')[0],
       uploader: formUploader.trim(),
       isPinned: formIsPinned,
+      isHidden: formIsHidden,
       clicks: 0
     };
 
@@ -205,6 +209,7 @@ export default function App() {
     setFormFileType('pdf');
     setFormUploader('');
     setFormIsPinned(false);
+    setFormIsHidden(false);
     setFormErrors({});
   };
 
@@ -223,6 +228,18 @@ export default function App() {
     );
     showToast(
       currentPinStatus ? 'Pin dokumen dilepas.' : 'Dokumen berhasil disematkan di atas.',
+      'success'
+    );
+  };
+
+  const handleToggleVisibility = (id: string, currentHiddenStatus: boolean) => {
+    setDocuments((prev) =>
+      prev.map((doc) =>
+        doc.id === id ? { ...doc, isHidden: !doc.isHidden } : doc
+      )
+    );
+    showToast(
+      currentHiddenStatus ? 'Dokumen sekarang ditampilkan ke Publik.' : 'Dokumen berhasil disembunyikan dari Publik.',
       'success'
     );
   };
@@ -278,7 +295,8 @@ export default function App() {
           doc.description.toLowerCase().includes(query) ||
           doc.uploader.toLowerCase().includes(query) ||
           doc.category.toLowerCase().includes(query);
-        return matchesCategory && matchesSearch;
+        const matchesVisibility = isAdmin || !doc.isHidden;
+        return matchesCategory && matchesSearch && matchesVisibility;
       })
       .sort((a, b) => {
         // Pinned documents always float to top if sorted generally, 
@@ -300,17 +318,18 @@ export default function App() {
         }
         return 0;
       });
-  }, [documents, selectedCategory, searchQuery, sortBy]);
+  }, [documents, selectedCategory, searchQuery, sortBy, isAdmin]);
 
   // Statistics Helper
   const stats = useMemo(() => {
+    const visibleDocs = isAdmin ? documents : documents.filter(d => !d.isHidden);
     return {
-      total: documents.length,
-      pinned: documents.filter((d) => d.isPinned).length,
-      categoriesCount: new Set(documents.map((d) => d.category)).size,
-      totalClicks: documents.reduce((sum, d) => sum + d.clicks, 0)
+      total: visibleDocs.length,
+      pinned: visibleDocs.filter((d) => d.isPinned).length,
+      categoriesCount: new Set(visibleDocs.map((d) => d.category)).size,
+      totalClicks: visibleDocs.reduce((sum, d) => sum + d.clicks, 0)
     };
-  }, [documents]);
+  }, [documents, isAdmin]);
 
   // File type design helpers
   const getFileTypeBadge = (type: DocumentLink['fileType']) => {
@@ -712,6 +731,14 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* HIDDEN VISIBILITY RIBBON (ADMIN-ONLY VISIBLE) */}
+                    {doc.isHidden && (
+                      <div className={`absolute top-0 ${doc.isPinned ? 'left-0 rounded-br-xl' : 'right-0 rounded-bl-xl'} bg-red-600 text-white px-3 py-1 font-extrabold text-[10px] uppercase tracking-wider flex items-center gap-1 shadow-xs z-10`}>
+                        <EyeOff className="w-3 h-3" />
+                        <span>Tersembunyi</span>
+                      </div>
+                    )}
+
                     {/* CORE CONTENT HEADER */}
                     <div className="p-5 flex-1">
                       
@@ -721,6 +748,12 @@ export default function App() {
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200/60 max-w-[150px] truncate">
                           {doc.category}
                         </span>
+                        {doc.isHidden && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+                            <EyeOff className="w-3 h-3 text-red-500" />
+                            Tersembunyi
+                          </span>
+                        )}
                       </div>
 
                       {/* Title block */}
@@ -763,6 +796,18 @@ export default function App() {
                       <div className="flex items-center gap-1.5">
                         {isAdmin && (
                           <>
+                            <button
+                              onClick={() => handleToggleVisibility(doc.id, !!doc.isHidden)}
+                              title={doc.isHidden ? 'Tampilkan Dokumen ke Publik' : 'Sembunyikan Dokumen dari Publik'}
+                              className={`p-2 rounded-xl border transition-all duration-150 ${
+                                doc.isHidden
+                                  ? 'bg-red-100 border-red-300 text-red-700 hover:bg-red-100'
+                                  : 'bg-white border-slate-200 text-slate-500 hover:text-emerald-600 hover:border-emerald-300 hover:bg-emerald-50/30'
+                              }`}
+                            >
+                              {doc.isHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+
                             <button
                               onClick={() => handleTogglePin(doc.id, doc.isPinned)}
                               title={doc.isPinned ? 'Lepas Sematan' : 'Sematkan Dokumen'}
@@ -1134,18 +1179,33 @@ export default function App() {
                   />
                 </div>
 
-                {/* 5. Pin Checkbox */}
-                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex items-center gap-3">
-                  <input
-                    id="form-pin"
-                    type="checkbox"
-                    checked={formIsPinned}
-                    onChange={(e) => setFormIsPinned(e.target.checked)}
-                    className="w-4 h-4 text-brand-600 focus:ring-brand-500 border-slate-300 rounded"
-                  />
-                  <label htmlFor="form-pin" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                    Sematkan Berkas di Bagian Atas Halaman (Pinned Document)
-                  </label>
+                {/* 5. Pin & Hide Options */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex items-center gap-3">
+                    <input
+                      id="form-pin"
+                      type="checkbox"
+                      checked={formIsPinned}
+                      onChange={(e) => setFormIsPinned(e.target.checked)}
+                      className="w-4 h-4 text-brand-600 focus:ring-brand-500 border-slate-300 rounded"
+                    />
+                    <label htmlFor="form-pin" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                      Sematkan Berkas di Atas (Pinned)
+                    </label>
+                  </div>
+
+                  <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex items-center gap-3">
+                    <input
+                      id="form-hidden"
+                      type="checkbox"
+                      checked={formIsHidden}
+                      onChange={(e) => setFormIsHidden(e.target.checked)}
+                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300 rounded"
+                    />
+                    <label htmlFor="form-hidden" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                      Sembunyikan dari Publik
+                    </label>
+                  </div>
                 </div>
 
               </form>
