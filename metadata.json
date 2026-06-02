@@ -1,0 +1,6 @@
+{
+  "name": "Portal Dokumen MAN 1 Tasikmalaya",
+  "description": "Halaman portal dokumen resmi MAN 1 Tasikmalaya untuk mempermudah akses file, dokumen kurikulum, administrasi, dan kesiswaan dengan fitur tambah link dinamis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
