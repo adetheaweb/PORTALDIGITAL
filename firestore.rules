@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSessionAuthorized() {
+      return isSignedIn() && 
+        exists(/databases/$(database)/documents/sessions/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/sessions/$(request.auth.uid)).data.authorized == true;
+    }
+
+    // Documents collection rules
+    match /documents/{docId} {
+      // List/Get: Everyone can read non-hidden documents. Sessions containing authorized admins can read all.
+      allow read: if (resource == null || resource.data.isHidden != true) || isSessionAuthorized();
+
+      // Create: Allowed if session is authorized and data matches entity validation
+      allow create: if isSessionAuthorized() && 
+        isValidId(docId) &&
+        request.resource.data.id is string &&
+        request.resource.data.title is string && request.resource.data.title.size() <= 200 &&
+        request.resource.data.url is string && request.resource.data.url.size() <= 1000 &&
+        request.resource.data.category is string &&
+        request.resource.data.description is string && request.resource.data.description.size() <= 2000 &&
+        request.resource.data.fileType is string &&
+        request.resource.data.dateAdded is string &&
+        request.resource.data.uploader is string &&
+        request.resource.data.isPinned is bool &&
+        request.resource.data.clicks is int;
+
+      // Update: Split actions.
+      allow update: if (
+        // Action 1: Increment clicks (anyone can increment clicks by exactly 1 without session)
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['clicks']) &&
+         request.resource.data.clicks == resource.data.clicks + 1)
+      ) || (
+        // Action 2: Admin edits
+        isSessionAuthorized() &&
+        request.resource.data.title is string && request.resource.data.title.size() <= 200 &&
+        request.resource.data.url is string && request.resource.data.url.size() <= 1000 &&
+        request.resource.data.category is string &&
+        request.resource.data.description is string && request.resource.data.description.size() <= 2000 &&
+        request.resource.data.fileType is string &&
+        request.resource.data.dateAdded is string &&
+        request.resource.data.uploader is string &&
+        request.resource.data.isPinned is bool &&
+        request.resource.data.clicks is int
+      );
+
+      // Delete: Admin only
+      allow delete: if isSessionAuthorized();
+    }
+
+    // Settings collection rules
+    match /settings/{settingId} {
+      // Do not allow anyone to read the admin settings directly
+      allow read: if false;
+
+      // Allow bootstrap creation if there is no existing admin settings
+      allow create: if isValidId(settingId) && 
+        settingId == 'admin' &&
+        !exists(/databases/$(database)/documents/settings/admin) &&
+        request.resource.data.adminPin is string && 
+        request.resource.data.adminPin.size() >= 4;
+
+      // Allow update if session is authorized
+      allow update: if isSessionAuthorized() && 
+        settingId == 'admin' &&
+        request.resource.data.adminPin is string && 
+        request.resource.data.adminPin.size() >= 4;
+    }
+
+    // Sessions collection rules
+    match /sessions/{sessionId} {
+      // Anyone can read their own session status
+      allow read: if isSignedIn() && request.auth.uid == sessionId;
+
+      // Anyone can create or update their own session if the pin matches the stored admin pin
+      allow create, update: if isSignedIn() && 
+        request.auth.uid == sessionId &&
+        request.resource.data.authorized == true &&
+        request.resource.data.pin is string &&
+        // Secure server-side check of the pin field against settings/admin adminPin
+        request.resource.data.pin == get(/databases/$(database)/documents/settings/admin).data.adminPin;
+    }
+  }
+}

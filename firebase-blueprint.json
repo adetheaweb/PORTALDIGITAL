@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "DocumentLink": {
+      "title": "DocumentLink",
+      "description": "Representasi link berkas atau dokumen digital madrasah",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID unik dokumen"
+        },
+        "title": {
+          "type": "string",
+          "description": "Judul dokumen"
+        },
+        "url": {
+          "type": "string",
+          "description": "Tautan URL dokumen"
+        },
+        "category": {
+          "type": "string",
+          "description": "Kategori berkas"
+        },
+        "description": {
+          "type": "string",
+          "description": "Deskripsi berkas"
+        },
+        "fileType": {
+          "type": "string",
+          "enum": ["pdf", "doc", "xls", "ppt", "drive", "link"],
+          "description": "Tipe ikon berkas"
+        },
+        "dateAdded": {
+          "type": "string",
+          "description": "Tanggal ditambahkan"
+        },
+        "uploader": {
+          "type": "string",
+          "description": "Nama pengunggah"
+        },
+        "isPinned": {
+          "type": "boolean",
+          "description": "Status pin dokumen"
+        },
+        "clicks": {
+          "type": "integer",
+          "description": "Jumlah klik akses"
+        },
+        "isHidden": {
+          "type": "boolean",
+          "description": "Status visibilitas tersembunyi"
+        }
+      },
+      "required": ["id", "title", "url", "category", "description", "fileType", "dateAdded", "uploader", "isPinned", "clicks"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Pengaturan sistem seperti PIN administrator",
+      "type": "object",
+      "properties": {
+        "adminPin": {
+          "type": "string",
+          "description": "PIN administrator untuk kontrol keamanan"
+        }
+      },
+      "required": ["adminPin"]
+    },
+    "Session": {
+      "title": "Session",
+      "description": "Sesi administratif terverifikasi rules",
+      "type": "object",
+      "properties": {
+        "pin": {
+          "type": "string",
+          "description": "PIN yang diverifikasi"
+        },
+        "authorized": {
+          "type": "boolean",
+          "description": "Status otorisasi"
+        }
+      },
+      "required": ["pin", "authorized"]
+    }
+  },
+  "firestore": {
+    "documents/{docId}": {
+      "schema": {
+        "$ref": "#/entities/DocumentLink"
+      },
+      "description": "Koleksi dokumen digital madrasah"
+    },
+    "settings/{settingId}": {
+      "schema": {
+        "$ref": "#/entities/SystemSettings"
+      },
+      "description": "Pengaturan global aplikasi"
+    },
+    "sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/Session"
+      },
+      "description": "Status verifikasi admin sesi aktif"
+    }
+  }
+}

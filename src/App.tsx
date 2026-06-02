@@ -39,6 +39,18 @@ import {
 } from 'lucide-react';
 import { DocumentLink, CategoryType } from './types';
 import { INITIAL_DOCUMENTS } from './data/defaultDocuments';
+import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { 
+  onSnapshot, 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  updateDoc, 
+  getDoc,
+  increment 
+} from 'firebase/firestore';
 
 interface Toast {
   id: string;
@@ -47,17 +59,8 @@ interface Toast {
 }
 
 export default function App() {
-  const [documents, setDocuments] = useState<DocumentLink[]>(() => {
-    const saved = localStorage.getItem('man1_tsm_documents');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error('Error parsing saved documents', e);
-      }
-    }
-    return INITIAL_DOCUMENTS;
-  });
+  const [documents, setDocuments] = useState<DocumentLink[]>([]);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   // State Management
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,21 +76,86 @@ export default function App() {
   const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState(false);
   const [adminPinInput, setAdminPinInput] = useState('');
   const [pinError, setPinError] = useState('');
-  const [adminPin, setAdminPin] = useState(() => {
-    return localStorage.getItem('man1_tsm_admin_pin') || 'admin123';
-  });
   const [isChangePinModalOpen, setIsChangePinModalOpen] = useState(false);
   const [currentPinInputForChange, setCurrentPinInputForChange] = useState('');
   const [newPinInput, setNewPinInput] = useState('');
   const [confirmNewPinInput, setConfirmNewPinInput] = useState('');
   const [changePinError, setChangePinError] = useState('');
 
-  const handleChangePin = (e: React.FormEvent) => {
+  // Bootstrap Admin Pin and Sync Session and Documents in real-time
+  useEffect(() => {
+    let unsubscribeDocs: (() => void) | null = null;
+
+    const checkAndBootstrapAdminSetting = async () => {
+      try {
+        await setDoc(doc(db, 'settings', 'admin'), { adminPin: 'admin123' });
+        console.log("Admin PIN bootstrapped to 'admin123' successfully.");
+      } catch (e) {
+        // Safe to ignore if it already exists or writing is denied
+      }
+    };
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setIsAuthReady(true);
+        await checkAndBootstrapAdminSetting();
+
+        // Check if there is an active valid session for this browser session
+        try {
+          const sessionSnap = await getDoc(doc(db, 'sessions', user.uid));
+          if (sessionSnap.exists() && sessionSnap.data()?.authorized === true) {
+            setIsAdmin(true);
+          } else {
+            setIsAdmin(false);
+          }
+        } catch (error) {
+          setIsAdmin(false);
+        }
+
+        // Initialize documents collection listener
+        unsubscribeDocs = onSnapshot(collection(db, 'documents'), (snapshot) => {
+          const docsList: DocumentLink[] = [];
+          snapshot.forEach((snapDoc) => {
+            docsList.push(snapDoc.data() as DocumentLink);
+          });
+
+          if (docsList.length === 0) {
+            // Seed INITIAL_DOCUMENTS from local file
+            INITIAL_DOCUMENTS.forEach(async (d) => {
+              try {
+                await setDoc(doc(db, 'documents', d.id), d);
+              } catch (err) {
+                console.error("Error seeding initial documents", err);
+              }
+            });
+          } else {
+            setDocuments(docsList);
+          }
+        }, (error) => {
+          console.error("Firestore onSnapshot error:", error);
+        });
+
+      } else {
+        try {
+          await signInAnonymously(auth);
+        } catch (e) {
+          console.error("Anonymous authentication error", e);
+        }
+      }
+    });
+
+    return () => {
+      if (unsubscribeAuth) unsubscribeAuth();
+      if (unsubscribeDocs) unsubscribeDocs();
+    };
+  }, []);
+
+  const handleChangePin = async (e: React.FormEvent) => {
     e.preventDefault();
     setChangePinError('');
 
-    if (currentPinInputForChange !== adminPin) {
-      setChangePinError('PIN lama Anda salah.');
+    if (!auth.currentUser) {
+      setChangePinError('Otentikasi belum siap. Silakan refresh halaman.');
       return;
     }
 
@@ -106,16 +174,55 @@ export default function App() {
       return;
     }
 
-    // Save the new PIN
-    setAdminPin(newPinInput);
-    localStorage.setItem('man1_tsm_admin_pin', newPinInput);
-    showToast('PIN Administrator berhasil diperbarui!', 'success');
-    setIsChangePinModalOpen(false);
+    try {
+      // Step 1: Verify current PIN by submitting it to current session
+      const userSessionRef = doc(db, 'sessions', auth.currentUser.uid);
+      await setDoc(userSessionRef, {
+        pin: currentPinInputForChange,
+        authorized: true
+      });
 
-    // Reset fields
-    setCurrentPinInputForChange('');
-    setNewPinInput('');
-    setConfirmNewPinInput('');
+      // Step 2: Session is authorized, now we can update the global settings PIN
+      await setDoc(doc(db, 'settings', 'admin'), {
+        adminPin: newPinInput
+      });
+
+      // Step 3: Refresh local session under the new PIN
+      await setDoc(doc(db, 'sessions', auth.currentUser.uid), {
+        pin: newPinInput,
+        authorized: true
+      });
+
+      showToast('PIN Administrator berhasil diperbarui!', 'success');
+      setIsChangePinModalOpen(false);
+
+      // Reset fields
+      setCurrentPinInputForChange('');
+      setNewPinInput('');
+      setConfirmNewPinInput('');
+    } catch (error) {
+      setChangePinError('Verifikasi PIN lama salah atau Anda tidak memiliki akses.');
+    }
+  };
+
+  const handleVerifyLogin = async (enteredPin: string) => {
+    if (!auth.currentUser) {
+      setPinError('Koneksi autentikasi belum siap. Silakan tunggu beberapa saat.');
+      return;
+    }
+    setPinError('');
+    try {
+      const userSessionRef = doc(db, 'sessions', auth.currentUser.uid);
+      await setDoc(userSessionRef, {
+        pin: enteredPin.trim(),
+        authorized: true
+      });
+      setIsAdmin(true);
+      setIsAdminLoginModalOpen(false);
+      showToast('Berhasil masuk sebagai administrator!', 'success');
+    } catch (e: any) {
+      setPinError('PIN salah! Silakan coba lagi. Petunjuk: PIN standar bawaan adalah "admin123".');
+    }
   };
 
   // Add Document Form State
@@ -128,11 +235,6 @@ export default function App() {
   const [formIsPinned, setFormIsPinned] = useState(false);
   const [formIsHidden, setFormIsHidden] = useState(false);
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
-
-  // Sync to localStorage
-  useEffect(() => {
-    localStorage.setItem('man1_tsm_documents', JSON.stringify(documents));
-  }, [documents]);
 
   // Real-time Indonesian Clock Effect
   useEffect(() => {
@@ -165,7 +267,7 @@ export default function App() {
   };
 
   // Document Management Actions
-  const handleAddDocument = (e: React.FormEvent) => {
+  const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     const errors: { [key: string]: string } = {};
 
@@ -183,8 +285,9 @@ export default function App() {
       return;
     }
 
+    const docId = `doc-${Date.now()}`;
     const newDoc: DocumentLink = {
-      id: `doc-${Date.now()}`,
+      id: docId,
       title: formTitle.trim(),
       url: formUrl.trim(),
       category: formCategory,
@@ -197,51 +300,67 @@ export default function App() {
       clicks: 0
     };
 
-    setDocuments((prev) => [newDoc, ...prev]);
-    showToast(`Dokumen "${formTitle}" berhasil ditambahkan!`, 'success');
-    setIsModalOpen(false);
-    
-    // Reset Form
-    setFormTitle('');
-    setFormUrl('');
-    setFormCategory('Kurikulum');
-    setFormDescription('');
-    setFormFileType('pdf');
-    setFormUploader('');
-    setFormIsPinned(false);
-    setFormIsHidden(false);
-    setFormErrors({});
-  };
-
-  const handleDeleteDocument = (id: string, title: string) => {
-    if (window.confirm(`Apakah Anda yakin ingin menghapus dokumen "${title}"?`)) {
-      setDocuments((prev) => prev.filter((doc) => doc.id !== id));
-      showToast('Dokumen berhasil dihapus.', 'info');
+    try {
+      await setDoc(doc(db, 'documents', docId), newDoc);
+      showToast(`Dokumen "${formTitle}" berhasil ditambahkan!`, 'success');
+      setIsModalOpen(false);
+      
+      // Reset Form
+      setFormTitle('');
+      setFormUrl('');
+      setFormCategory('Kurikulum');
+      setFormDescription('');
+      setFormFileType('pdf');
+      setFormUploader('');
+      setFormIsPinned(false);
+      setFormIsHidden(false);
+      setFormErrors({});
+    } catch (error) {
+      showToast('Gagal menambahkan dokumen ke server.', 'error');
+      handleFirestoreError(error, OperationType.CREATE, `documents/${docId}`);
     }
   };
 
-  const handleTogglePin = (id: string, currentPinStatus: boolean) => {
-    setDocuments((prev) =>
-      prev.map((doc) =>
-        doc.id === id ? { ...doc, isPinned: !doc.isPinned } : doc
-      )
-    );
-    showToast(
-      currentPinStatus ? 'Pin dokumen dilepas.' : 'Dokumen berhasil disematkan di atas.',
-      'success'
-    );
+  const handleDeleteDocument = async (id: string, title: string) => {
+    if (window.confirm(`Apakah Anda yakin ingin menghapus dokumen "${title}"?`)) {
+      try {
+        await deleteDoc(doc(db, 'documents', id));
+        showToast('Dokumen berhasil dihapus.', 'info');
+      } catch (error) {
+        showToast('Gagal menghapus dokumen dari server.', 'error');
+        handleFirestoreError(error, OperationType.DELETE, `documents/${id}`);
+      }
+    }
   };
 
-  const handleToggleVisibility = (id: string, currentHiddenStatus: boolean) => {
-    setDocuments((prev) =>
-      prev.map((doc) =>
-        doc.id === id ? { ...doc, isHidden: !doc.isHidden } : doc
-      )
-    );
-    showToast(
-      currentHiddenStatus ? 'Dokumen sekarang ditampilkan ke Publik.' : 'Dokumen berhasil disembunyikan dari Publik.',
-      'success'
-    );
+  const handleTogglePin = async (id: string, currentPinStatus: boolean) => {
+    try {
+      await updateDoc(doc(db, 'documents', id), {
+        isPinned: !currentPinStatus
+      });
+      showToast(
+        currentPinStatus ? 'Pin dokumen dilepas.' : 'Dokumen berhasil disematkan di atas.',
+        'success'
+      );
+    } catch (error) {
+      showToast('Gagal merubah status pin dokumen.', 'error');
+      handleFirestoreError(error, OperationType.UPDATE, `documents/${id}`);
+    }
+  };
+
+  const handleToggleVisibility = async (id: string, currentHiddenStatus: boolean) => {
+    try {
+      await updateDoc(doc(db, 'documents', id), {
+        isHidden: !currentHiddenStatus
+      });
+      showToast(
+        currentHiddenStatus ? 'Dokumen sekarang ditampilkan ke Publik.' : 'Dokumen berhasil disembunyikan dari Publik.',
+        'success'
+      );
+    } catch (error) {
+      showToast('Gagal merubah visibilitas dokumen.', 'error');
+      handleFirestoreError(error, OperationType.UPDATE, `documents/${id}`);
+    }
   };
 
   const handleCopyLink = (url: string) => {
@@ -255,19 +374,33 @@ export default function App() {
     );
   };
 
-  const handleRecordClick = (id: string, url: string) => {
-    setDocuments((prev) =>
-      prev.map((doc) =>
-        doc.id === id ? { ...doc, clicks: doc.clicks + 1 } : doc
-      )
-    );
+  const handleRecordClick = async (id: string, url: string) => {
+    try {
+      await updateDoc(doc(db, 'documents', id), {
+        clicks: increment(1)
+      });
+    } catch (error) {
+      console.error("Gagal mencatat hit klik:", error);
+    }
     window.open(url, '_blank', 'noopener,noreferrer');
   };
 
-  const handleResetData = () => {
+  const handleResetData = async () => {
     if (window.confirm('Apakah Anda ingin memulihkan semua dokumen bawaan sistem? Tindakan ini akan mengembalikan berkas-berkas bawaan MAN 1 Tasikmalaya.')) {
-      setDocuments(INITIAL_DOCUMENTS);
-      showToast('Database dokumen berhasil dipulihkan.', 'success');
+      try {
+        // Delete existing docs from database
+        for (const docItem of documents) {
+          await deleteDoc(doc(db, 'documents', docItem.id));
+        }
+        // Repopulate with INITIAL_DOCUMENTS
+        for (const docItem of INITIAL_DOCUMENTS) {
+          await setDoc(doc(db, 'documents', docItem.id), docItem);
+        }
+        showToast('Database dokumen berhasil dipulihkan.', 'success');
+      } catch (error) {
+        showToast('Gagal memulihkan database dokumen.', 'error');
+        handleFirestoreError(error, OperationType.WRITE, 'documents (bulk)');
+      }
     }
   };
 
@@ -1299,13 +1432,7 @@ export default function App() {
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         // Trigger verification
-                        if (adminPinInput.trim() === adminPin) {
-                          setIsAdmin(true);
-                          setIsAdminLoginModalOpen(false);
-                          showToast('Berhasil masuk sebagai administrator!', 'success');
-                        } else {
-                          setPinError(`PIN salah! Silakan coba lagi.${adminPin === 'admin123' ? ' Petunjuk: PIN standar bawaan adalah "admin123".' : ''}`);
-                        }
+                        handleVerifyLogin(adminPinInput);
                       }
                     }}
                     autoFocus
@@ -1320,11 +1447,7 @@ export default function App() {
                     <div className="bg-emerald-50 text-emerald-800 text-[11px] p-2.5 rounded-lg border border-emerald-100 flex items-start gap-1.5 mt-2">
                       <Info className="w-4 h-4 shrink-0 text-emerald-600 mt-0.5" />
                       <div>
-                        {adminPin === 'admin123' ? (
-                          <span>Gunakan kode pengetesan <b>admin123</b> untuk membuka penuh fitur manajemen berkas madrasah.</span>
-                        ) : (
-                          <span>Gunakan kode PIN khusus administrator yang telah diperbaharui untuk mengelola berkas.</span>
-                        )}
+                        <span>Gunakan kode PIN khusus administrator untuk mengelola berkas. Bawaan sistem: <b>admin123</b>.</span>
                       </div>
                     </div>
                   )}
@@ -1341,15 +1464,7 @@ export default function App() {
                   Batal
                 </button>
                 <button
-                  onClick={() => {
-                    if (adminPinInput.trim() === adminPin) {
-                      setIsAdmin(true);
-                      setIsAdminLoginModalOpen(false);
-                      showToast('Berhasil masuk sebagai administrator!', 'success');
-                    } else {
-                      setPinError(`PIN salah! Silakan coba lagi.${adminPin === 'admin123' ? ' Petunjuk: PIN standar bawaan adalah "admin123".' : ''}`);
-                    }
-                  }}
+                  onClick={() => handleVerifyLogin(adminPinInput)}
                   className="px-5 py-2.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1 shadow-sm transition-colors"
                 >
                   <Unlock className="w-4 h-4 stroke-[2.5]" />
