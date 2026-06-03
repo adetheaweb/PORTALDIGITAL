@@ -81,11 +81,37 @@ export default function App() {
   const [newPinInput, setNewPinInput] = useState('');
   const [confirmNewPinInput, setConfirmNewPinInput] = useState('');
   const [changePinError, setChangePinError] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  // Bootstrap Admin Pin and Sync Session and Documents in real-time
+  // Sync Documents in real-time from Firestore (Loads immediately regardless of auth)
   useEffect(() => {
-    let unsubscribeDocs: (() => void) | null = null;
+    const unsubscribeDocs = onSnapshot(collection(db, 'documents'), (snapshot) => {
+      const docsList: DocumentLink[] = [];
+      snapshot.forEach((snapDoc) => {
+        docsList.push(snapDoc.data() as DocumentLink);
+      });
 
+      if (docsList.length === 0) {
+        // Fallback to local INITIAL_DOCUMENTS if DB is empty
+        setDocuments(INITIAL_DOCUMENTS);
+      } else {
+        setDocuments(docsList);
+      }
+    }, (error) => {
+      console.error("Firestore onSnapshot error:", error);
+      // Fallback to local documents if Firebase is offline or loading is denied
+      if (documents.length === 0) {
+        setDocuments(INITIAL_DOCUMENTS);
+      }
+    });
+
+    return () => {
+      if (unsubscribeDocs) unsubscribeDocs();
+    };
+  }, []);
+
+  // Bootstrap Admin Pin and Sync Session status in real-time
+  useEffect(() => {
     const checkAndBootstrapAdminSetting = async () => {
       try {
         await setDoc(doc(db, 'settings', 'admin'), { adminPin: 'admin123' });
@@ -98,6 +124,7 @@ export default function App() {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setIsAuthReady(true);
+        setAuthError(null);
         await checkAndBootstrapAdminSetting();
 
         // Check if there is an active valid session for this browser session
@@ -112,43 +139,35 @@ export default function App() {
           setIsAdmin(false);
         }
 
-        // Initialize documents collection listener
-        unsubscribeDocs = onSnapshot(collection(db, 'documents'), (snapshot) => {
-          const docsList: DocumentLink[] = [];
-          snapshot.forEach((snapDoc) => {
-            docsList.push(snapDoc.data() as DocumentLink);
-          });
-
-          if (docsList.length === 0) {
-            // Seed INITIAL_DOCUMENTS from local file
+        // Try to automatically seed database if it is empty and user is logged in
+        try {
+          if (documents.length === 0) {
             INITIAL_DOCUMENTS.forEach(async (d) => {
               try {
                 await setDoc(doc(db, 'documents', d.id), d);
               } catch (err) {
-                console.error("Error seeding initial documents", err);
+                // Ignore seeding errors for write-protected clients
               }
             });
-          } else {
-            setDocuments(docsList);
           }
-        }, (error) => {
-          console.error("Firestore onSnapshot error:", error);
-        });
+        } catch (err) {
+          // Ignore
+        }
 
       } else {
         try {
           await signInAnonymously(auth);
-        } catch (e) {
+        } catch (e: any) {
           console.error("Anonymous authentication error", e);
+          setAuthError(e.code || e.message || String(e));
         }
       }
     });
 
     return () => {
       if (unsubscribeAuth) unsubscribeAuth();
-      if (unsubscribeDocs) unsubscribeDocs();
     };
-  }, []);
+  }, [documents.length]);
 
   const handleChangePin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -206,13 +225,27 @@ export default function App() {
   };
 
   const handleVerifyLogin = async (enteredPin: string) => {
-    if (!auth.currentUser) {
-      setPinError('Koneksi autentikasi belum siap. Silakan tunggu beberapa saat.');
+    setPinError('');
+    
+    let currentUser = auth.currentUser;
+    if (!currentUser) {
+      try {
+        const userCredential = await signInAnonymously(auth);
+        currentUser = userCredential.user;
+      } catch (e: any) {
+        console.error("Manual signInAnonymously failed", e);
+        setPinError(`Koneksi autentikasi belum siap: ${e.code || e.message}. Mohon aktifkan provider 'Anonymous' di menu Authentication > Sign-in method di Firebase Console Anda.`);
+        return;
+      }
+    }
+
+    if (!currentUser) {
+      setPinError('Otentikasi belum siap. Silakan refresh halaman atau periksa konfigurasi Firebase.');
       return;
     }
-    setPinError('');
+
     try {
-      const userSessionRef = doc(db, 'sessions', auth.currentUser.uid);
+      const userSessionRef = doc(db, 'sessions', currentUser.uid);
       await setDoc(userSessionRef, {
         pin: enteredPin.trim(),
         authorized: true
